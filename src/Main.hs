@@ -1,50 +1,131 @@
-module Main where
+-- https://airbnb.quip.com/fMQFASRC710u/Kingdomino
+module Kingdomino where
 
-import Data.Char (digitToInt)
-import qualified Data.Map.Strict as M
-
-main :: IO ()
-main = do
-  putStrLn "hello world"
+import Data.Char (isLetter)
+import qualified Data.Map as Map
+import Data.Maybe (isJust)
 
 data Tile =
-  Tile Char
+  Tile String
        Int
   deriving (Show, Eq)
 
-getTileType :: Tile -> Char
-getTileType (Tile char _) = char
+type Row = [Tile]
 
 data Board =
-  Board [[Tile]]
+  Board [Row]
         Int
         Int
   deriving (Show, Eq)
 
-getTile :: Board -> Int -> Int -> Tile
-getTile (Board tiles height width) x y = (tiles !! x) !! y
+-- check if a position is on the board or not
+onBoard :: Board -> Position -> Bool
+onBoard board@(Board rows height width) (row, col) =
+  row >= 0 && row < height && col >= 0 && col < width
 
--- Given an input of a list of Strings, build a board
--- Example input:
--- [
---   "G0 W1 W1 W0 P2",
---   "W0 W0 F0 F0 F0",
---   "W0 W1 F0 S2 S1",
---   "G0 X0 G1 G0 G0",
---   "S0 M2 M0 G1 F0"
--- ]
-makeBoard :: [String] -> Board
-makeBoard rows = Board tiles (length tiles) (length $ head tiles)
-    -- Parse "G0 W1 W1 W0 P2" into a list of Tiles
+getTile :: Board -> Position -> Tile
+getTile board@(Board rows height width) (row, col) = (rows !! row) !! col
+
+buildBoard :: [String] -> Board
+buildBoard strs = Board rows (length rows) (length $ head rows)
   where
-    tiles = map parseTiles rows
-    parseTiles :: String -> [Tile]
-    parseTiles str = map parseTile $ words str
-    -- Parse "G0" into a Tile
-    parseTile :: String -> Tile
-    parseTile str = Tile (head str) (digitToInt $ str !! 1)
+    rows :: [Row]
+    rows = map f strs
+    f :: String -> Row
+    f s = map toTile $ words s
+    toTile :: String -> Tile
+    toTile s =
+      let chars = takeWhile isLetter s
+          digits = read (dropWhile isLetter s) :: Int
+       in Tile chars digits
 
-inputRows =
+type Visited = Map.Map (Int, Int) Bool
+
+initVisited = Map.empty
+
+type Property = [Tile]
+
+-- calculate the total points of a Property
+propertyPoints :: Property -> Int
+propertyPoints property = crowns * length property
+  where
+    crowns = sum $ map getCrown property
+    getCrown (Tile _ n) = n
+
+initProperty = []
+
+type DiscoverState = (Tile, Property, Visited)
+
+type Position = (Int, Int)
+
+-- get four neighbors of a position
+getNeighbors :: Board -> Position -> [Position]
+getNeighbors board@(Board rows height width) (row, col) =
+  filter (onBoard board) neighbors
+  where
+    neighbors :: [Position]
+    neighbors = [(row, col - 1), (row, col + 1), (row - 1, col), (row + 1, col)]
+
+hasVisited :: Visited -> Position -> Bool
+hasVisited visited pos = isJust $ Map.lookup pos visited
+
+sameTileType :: Tile -> Tile -> Bool
+sameTileType (Tile t1 _) (Tile t2 _) = t1 == t2
+
+-- add tile to property and mark position as visited
+updateDiscoverState :: DiscoverState -> Tile -> Position -> DiscoverState
+updateDiscoverState state@(startTile, property, visited) tile pos =
+  (startTile, newProperty, newVisited)
+  where
+    newProperty = tile : property
+    newVisited = Map.insert pos True visited
+
+-- explore all the tiles of the same type starting from a position
+discoverProperty :: Board -> Position -> DiscoverState -> DiscoverState
+discoverProperty board@(Board rows height width) (row, col) discoverState =
+  foldr ff discoverState neighbors
+  where
+    neighbors :: [Position]
+    neighbors = getNeighbors board (row, col)
+    ff :: Position -> DiscoverState -> DiscoverState
+    ff pos@(row', col') state =
+      let (startTile, property, visited) = state
+          currentTile = getTile board pos
+       in if not (hasVisited visited pos) && sameTileType startTile currentTile
+            then discoverProperty
+                   board
+                   pos
+                   (updateDiscoverState state currentTile pos)
+            else state
+
+-- Play a game.
+game :: Board -> Int
+game board@(Board rows height width) = sum $ map propertyPoints properties
+  where
+    properties :: [Property]
+    properties = map getProperty (fst $ go board)
+    getProperty :: DiscoverState -> Property
+    getProperty (_, p, _) = p
+    go :: Board -> ([DiscoverState], Visited)
+    go board@(Board rows height width) =
+      let positions =
+            [ (x, y)
+            | x <- enumFromTo 0 (height - 1)
+            , y <- enumFromTo 0 (width - 1)
+            ]
+       in foldr ff ([], initVisited) positions
+    ff :: Position -> ([DiscoverState], Visited) -> ([DiscoverState], Visited)
+    ff pos (states, visited) =
+      let tile = getTile board pos
+          initState = (tile, [tile], Map.insert pos True visited)
+       in if hasVisited visited pos
+            then (states, visited)
+            else let newState@(_, _, newVisited) =
+                       discoverProperty board pos initState
+                  in (newState : states, newVisited)
+
+input :: [String]
+input =
   [ "G0 W1 W1 W0 P2"
   , "W0 W0 F0 F0 F0"
   , "W0 W1 F0 S2 S1"
@@ -52,31 +133,35 @@ inputRows =
   , "S0 M2 M0 G1 F0"
   ]
 
-calculateScore :: Board -> Int
-calculateScore (Board tiles height width) = 99
-
-type Visited = M.Map (Int, Int) Bool
-
-isVisited :: Visited -> (Int, Int) -> Bool
-isVisited map t =
-  case M.lookup t map of
-    Nothing -> False
-    _ -> True
-
-markVisited :: Visited -> (Int, Int) -> Visited
-markVisited map t = M.insert t True map
-
-data VisitState =
-  VisitState Visited
-             Char
-  deriving (Show, Eq)
-
--- From a tile of (x, y), use DFS to discover all the connected tiles of
--- the same type.
-findTiles :: Board -> Int -> Int -> VisitState -> [Tile]
-findTiles (Board tiles height width) x y (VisitState visitedMap tileType) =
-  if isVisited visitedMap (x, y)
-     then []
-     else if getTileType (getTile tiles x y) /= tileType
-             then []
-             else
+main :: IO ()
+main =
+  let board = buildBoard input
+      score = game board
+   in print score
+-- test case 1
+-- position = (1 :: Int, 2 :: Int)
+--
+-- initDiscoverState =
+--   ( Tile "F" 0
+--   , getTile board position : initProperty
+--   , Map.insert position True initVisited)
+--
+-- test case 2
+--
+-- position = (0 :: Int, 1 :: Int)
+--
+-- initDiscoverState =
+--   ( Tile "W" 1
+--   , getTile board position : initProperty
+--   , Map.insert position True initVisited)
+--
+-- test case 3
+--
+-- position = (0 :: Int, 0 :: Int)
+--
+-- initDiscoverState =
+--   ( Tile "G" 0
+--   , getTile board position : initProperty
+--   , Map.insert position True initVisited)
+--
+-- discover = discoverProperty board position initDiscoverState
